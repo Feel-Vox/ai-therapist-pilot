@@ -7,7 +7,7 @@ const openai = new OpenAI({ apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY });
 async function isThreadValid(threadId: string): Promise<boolean> {
   try {
     const thread = await openai.beta.threads.retrieve(threadId);
-    console.log("🔍 Thread ID:", JSON.stringify(thread, null, 2));
+    console.log("Thread ID:", JSON.stringify(thread, null, 2));
     return true;
   } catch (error) {
     console.warn(`Thread ${threadId} not found or expired.`);
@@ -64,15 +64,26 @@ export async function POST(req: Request) {
     do {
       await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
       runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
-      console.log(`🔄 Run status: ${runStatus.status}`);
+      console.log(`Run status: ${runStatus.status}`);
     } while (runStatus.status !== "completed");
 
     // **Retrieve the last message from the Assistant**
     const messages = await openai.beta.threads.messages.list(threadId);
+
     const assistantResponse = messages.data.find(msg => msg.role === "assistant");
 
-    return NextResponse.json({ result: assistantResponse?.content || "⚠️ No response from assistant." });
+    // בדיקה אם קיים תוכן כלשהו
+    if (!assistantResponse || !assistantResponse.content || assistantResponse.content.length === 0) {
+      return NextResponse.json({ result: "No valid response from assistant." });
+    }
 
+    // חיפוש בלוק מסוג text
+    const textBlock = assistantResponse.content.find(block => block.type === "text");
+
+    // אם נמצא טקסט, שלוף את ה-value, אחרת הודעת ברירת מחדל
+    const responseText = textBlock && "text" in textBlock ? textBlock.text.value : "No text content found.";
+
+    return NextResponse.json({ result: responseText });
   } catch (error) {
     console.error("Error generating response:", error);
     return NextResponse.json({ error: "Failed to generate response", details: error });
