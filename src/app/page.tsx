@@ -6,22 +6,32 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ sender: "user" | "bot"; text: string }[]>([]);
 
+  const userId = "test-user-123";
   const sendMessage = async () => {
     if (!input.trim()) return;
 
-    // הוספת הודעת המשתמש להיסטוריה
+    // Add the user message to history
     setMessages((prev) => [...prev, { sender: "user", text: input }]);
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: input }),
-    });
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: input, userId: userId }),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    // הוספת תגובת הבוט להיסטוריה
-    setMessages((prev) => [...prev, { sender: "bot", text: data.result || "Error: No response" }]);
+      // Retrieve the text from the array
+      const botResponse = Array.isArray(data.result) && data.result.length > 0
+        ? data.result[0].text?.value
+        : "No response";
+
+      setMessages((prev) => [...prev, { sender: "bot", text: botResponse }]);
+    } catch (error) {
+      console.error("Fetch error:", error);
+      setMessages((prev) => [...prev, { sender: "bot", text: "Error: No response from chatbot." }]);
+    }
 
     setInput("");
   };
@@ -53,7 +63,7 @@ export default function Home() {
           onClick={sendMessage}
           className="bg-blue-500 text-white px-4 py-2 rounded ml-2"
         >
-          שלח
+          Send
         </button>
       </div>
     </main>

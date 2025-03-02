@@ -1,78 +1,80 @@
-import { NextResponse } from "next/server";
 import { OpenAI } from "openai";
-import { ChatCompletionMessageParam } from "openai/resources/chat";
+import { NextResponse } from "next/server";
+import { getThreadId, saveThread } from "@/app/utils/threads";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY });
 
-// Load environment variables
-const systemContent = process.env.CONTENT?.replace(/\\n/g, "\n") || "Default: Virtual CBT Therapist.";
-const limitations = process.env.LIMITATIONS?.replace(/\\n/g, "\n") || "";
-const therapistTypes = process.env.THERAPIST_TYPES?.replace(/\\n/g, "\n") || "";
-const learningConfig = process.env.AI_LEARNING?.replace(/\\n/g, "\n") || "";
-const cbtTechniques = process.env.CBT_TECHNIQUES?.replace(/\\n/g, "\n") || "";
-
-// Define base system instructions for the AI therapist
-const baseInstructions = `
-${systemContent}
-\n\n🔹 **Mandatory Limitations:**\n${limitations}
-\n\n🔹 **Available Therapist Types:**\n${therapistTypes}
-\n\n🔹 **Continuous Learning and Self-Improvement:**\n${learningConfig}
-\n\n🔹 **CBT Techniques Used:**\n${cbtTechniques}
-`;
-
-let firstInteraction = true; // Flag to track if this is the first interaction
-
-export async function POST(req: Request) {
+async function isThreadValid(threadId: string): Promise<boolean> {
   try {
-    const { prompt, therapistType } = await req.json();
-
-    if (!prompt) {
-      return NextResponse.json({ error: "No prompt provided" }, { status: 400 });
-    }
-
-    // Select therapist style (default: Empathetic and Supportive)
-    let selectedTherapist = "Empathetic and Supportive"; 
-    if (therapistType && therapistTypes.includes(therapistType)) {
-      selectedTherapist = therapistType;
-    }
-
-    // Inform AI about the selected therapist style
-    const therapistPrompt = `🔹 **Selected Therapist Style:** ${selectedTherapist}\n`;
-
-    // Initialize chat history
-    const messages: ChatCompletionMessageParam[] = [];
-
-    // Display introduction only on the first interaction
-    if (firstInteraction) {
-      messages.push({ role: "system", content: `${baseInstructions}\n\n${therapistPrompt}` });
-      messages.push({ role: "assistant", content: "Hello, my name is Dovi, and I’m glad you chose me to guide you. I’m here to support you on your journey. Let's begin!" });
-      firstInteraction = false; // Ensure the introduction is shown only once
-    }
-
-    // Add user's message to the chat history
-    messages.push({ role: "user", content: prompt });
-
-    // Generate AI response
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: messages,
-      temperature: 0.7,
-      max_tokens: 500, // Limits response length for clarity
-    });
-
-    const result = completion.choices[0].message.content;
-
-    return NextResponse.json({ result });
+    const thread = await openai.beta.threads.retrieve(threadId);
+    console.log("🔍 Thread ID:", JSON.stringify(thread, null, 2));
+    return true;
   } catch (error) {
-    console.error("Error generating response:", error);
-    return NextResponse.json({ error: "Failed to generate response" }, { status: 500 });
+    console.warn(`Thread ${threadId} not found or expired.`);
+    return false;
   }
+}
+
+async function findOrCreateThread(userId: string): Promise<string> {
+  let threadId = getThreadId(userId);
+
+  if (threadId && await isThreadValid(threadId)) {
+    console.log(`Using existing Thread ID: ${threadId}`);
+    return threadId;
+  }
+
+  console.log(`Creating new Thread for user ${userId}...`);
+  const newThread = await openai.beta.threads.create();
+  threadId = newThread.id;
+  saveThread(userId, threadId);
+
+  console.log(`New Thread ID: ${threadId} created.`);
+  return threadId;
 }
 
 
 
+export async function POST(req: Request) {
+  try {
+    const { prompt, userId } = await req.json();
 
-// יך להשתמש בעדכון הזה?
-// 1️⃣ בצד ה-Frontend, יש לאפשר למשתמש לבחור את סוג המטפל (therapistType).
-// 2️⃣ בשליחת הבקשה ל-API, יש לשלוח את prompt יחד עם therapistType (אם נבחר).
-// 3️⃣ הבוט יתאים את סגנונו אוטומטית, ואם המטופל יבחר לעבור סגנון, ניתן לעדכן זאת בזמן אמת.
+    if (!prompt || !userId) {
+      console.error("Missing prompt or userId");
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    console.log(`🔹 Received prompt: ${prompt} from user: ${userId}`);
+
+    const threadId = await findOrCreateThread(userId);
+
+    await openai.beta.threads.messages.create(threadId, {
+      role: "user",
+      content: prompt
+    });
+
+    // הפעלת ה-Assistant עם השיחה
+    const run = await openai.beta.threads.runs.create(threadId, {
+      assistant_id: process.env.NEXT_PUBLIC_OPENAI_ASSISTANT_ID!
+    });
+
+    console.log("Waiting for assistant response...");
+
+    // **Wait for the Run to finish** and pull the response from the Assistant
+    let runStatus;
+    do {
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+      runStatus = await openai.beta.threads.runs.retrieve(threadId, run.id);
+      console.log(`🔄 Run status: ${runStatus.status}`);
+    } while (runStatus.status !== "completed");
+
+    // **Retrieve the last message from the Assistant**
+    const messages = await openai.beta.threads.messages.list(threadId);
+    const assistantResponse = messages.data.find(msg => msg.role === "assistant");
+
+    return NextResponse.json({ result: assistantResponse?.content || "⚠️ No response from assistant." });
+
+  } catch (error) {
+    console.error("Error generating response:", error);
+    return NextResponse.json({ error: "Failed to generate response", details: error });
+  }
+}
